@@ -57,6 +57,15 @@ theme-roulette reroll | check-due | confirm-pending | skip-pending |
   "avoid nothing" only if the exclusion would otherwise leave no candidates
   (e.g. you only have one theme installed).
 
+**Heads up on wallpaper variety**: most Omarchy themes ship a branded
+`omarchy.png`-style splash wallpaper alongside their own art, as one file in
+the same pool everything else is picked from. On themes with a small total
+background count (e.g. `catppuccin-latte`, `everforest`, and `kanagawa` only
+ship 2 wallpapers each), that splash can end up as roughly 1-in-2 on every
+roll of that theme -- not a bug in the picker (`shuf` is uniform, avoid-repeat
+works correctly), just a side effect of a small pool. Themes with more
+wallpapers (`tokyo-night`, `retro-82`, etc.) dilute it a lot more.
+
 ## How it actually changes your theme/wallpaper
 
 Discovered on this machine via `omarchy theme --help` and reading
