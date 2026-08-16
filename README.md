@@ -7,6 +7,16 @@ you a beat to veto a scheduled roll before it lands.
 
 ## Demo
 
+**A fresh roll** -- Tokyo Night landed, panel shows what changed and when
+the next one's due, with a dice button to roll again right there.
+
+![Panel after a roll, on Tokyo Night](assets/screenshot-panel.png)
+
+**Right-click menu** -- schedule mode/params on the left, a rollback list of
+recent picks on the right.
+
+![Right-click menu: schedule controls and rollback list](assets/screenshot-menu.png)
+
 <table>
 <tr>
 <td width="50%">
