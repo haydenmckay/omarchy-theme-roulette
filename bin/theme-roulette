@@ -1,0 +1,495 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# theme-roulette -- CLI/scheduler that owns every fact about theme+wallpaper
+# rolling. Service.qml only mirrors state.json reactively (FileView) and
+# pokes this CLI on a timer; it never computes a roll or a schedule itself.
+# Same split as bin/media-pip and bin/butler-scan in the sibling plugins.
+#
+# Real Omarchy commands driven here (discovered via `omarchy theme --help`
+# and reading /usr/share/omarchy/bin/omarchy-theme-{set,bg-set,bg-next} on
+# this machine -- not invented):
+#   omarchy theme set <kebab-name>   Applies a theme (colors, hooks, and also
+#                                     auto-picks *a* background for it as a
+#                                     side effect -- deterministic "next in
+#                                     the theme's list", not random).
+#   omarchy theme bg set <path>      Pins a specific wallpaper file. Called
+#                                     right after `theme set` to override its
+#                                     auto-pick with our own random choice,
+#                                     so the theme+wallpaper pair is a single
+#                                     deliberate roll, not two independent
+#                                     coin flips.
+#   omarchy theme dir <kebab-name>   Resolves the directory holding a theme
+#                                     (user override preferred), used to find
+#                                     that theme's backgrounds/ folder.
+#
+# Theme names: `omarchy theme set` lowercases and dash-joins whatever you
+# pass it, so passing the already-kebab directory name (e.g. "tokyo-night")
+# round-trips cleanly -- no Title Case conversion needed to apply a theme,
+# only for display.
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-theme-roulette"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-theme-roulette"
+STATE_FILE="$STATE_DIR/state.json"
+LOCK_FILE="$STATE_DIR/.roll.lock"
+mkdir -p "$CONFIG_DIR" "$STATE_DIR"
+
+# ---- default config / state ------------------------------------------------
+#
+# mode: "random-interval" | "fixed-daily" | "specific-days"
+#   random-interval  reroll every intervalMinHours..intervalMaxHours, randomized
+#                     within that range, re-randomized after every roll.
+#   fixed-daily       reroll once a day at fixedTime, every day.
+#   specific-days     reroll at fixedTime, only on the weekdays listed in `days`.
+# fixedTime accepts anything GNU `date -d` parses as a time-of-day, so both
+# "9:00 AM" and "21:00" work -- stored as typed, not normalized.
+# avoidRepeatWindow: don't repeat a theme/wallpaper seen in the last N rolls.
+# A repeat of the *immediately previous* pick is always avoided even if this
+# is 0 -- see pick_theme/pick_wallpaper.
+# confirmTimeoutSeconds: how long a scheduled ("Ready to roll?") pick waits
+# for a response before auto-resolving to "Let it ride" -- see cmd_check_due.
+DEFAULT_CONFIG='{
+  "mode": "random-interval",
+  "intervalMinHours": 4,
+  "intervalMaxHours": 12,
+  "fixedTime": "9:00 AM",
+  "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+  "avoidRepeatWindow": 3,
+  "confirmTimeoutSeconds": 60
+}'
+DEFAULT_STATE='{"currentTheme":"","currentThemeKebab":"","currentWallpaper":"","lastRollAt":"","nextRollAt":"","history":[],"pending":false,"pendingTheme":"","pendingThemeKebab":"","pendingWallpaper":"","pendingSince":""}'
+
+[[ -f "$CONFIG_FILE" ]] || echo "$DEFAULT_CONFIG" >"$CONFIG_FILE"
+
+usage() {
+  cat <<EOF
+Usage: theme-roulette <command>
+
+Commands:
+  reroll            Immediately pick a new random theme+wallpaper (avoiding
+                     the last avoidRepeatWindow rolls, minimum: no immediate
+                     repeat), apply it via real Omarchy commands, and
+                     reschedule the next roll from config. This is the bar
+                     dice's left-click, the panel's "reroll again" button,
+                     and the right-click menu's rollback list all folding
+                     back to the same action once they've picked a target --
+                     it always bypasses the pending-confirmation flow below.
+  check-due          No-op unless nextRollAt has arrived AND nothing is
+                     already pending. When due, picks (but does not apply) a
+                     theme+wallpaper and stores it as a pending roll, for the
+                     UI to show a "Ready to roll?" prompt. Safe to call
+                     frequently (Service.qml polls this on a Timer); does
+                     nothing but a cheap timestamp/flag check the rest of
+                     the time.
+  confirm-pending    Apply whatever roll is currently pending ("Let it
+                     ride"), record history, and reschedule. No-op if
+                     nothing is pending (so a UI double-fire -- explicit
+                     click racing an auto-timeout -- is harmless). Also what
+                     the auto-confirm timeout calls once confirmTimeoutSeconds
+                     elapses with no response.
+  skip-pending       Discard the pending roll without applying it ("No, I'm
+                     feeling this"), keep the current theme, and reschedule
+                     the next cycle from config. No-op if nothing is pending.
+  recompute-next     Recalculate nextRollAt from the current config without
+                     rolling. Called on first run and whenever config.json
+                     changes, so an edited interval/schedule takes effect
+                     without waiting out the old one. No-op while a roll is
+                     pending, so an in-flight confirmation isn't clobbered.
+  history            Print recent rolls as a JSON array of {index, theme,
+                     wallpaper, at}, most recent (index 0, the current live
+                     pick) first.
+  restore <index>    Re-apply a past roll from `history` by index, without
+                     touching history or the schedule -- an explicit
+                     override, not a new roll (see cmd_restore).
+  config-set <json>  Shallow-merge a JSON object into config.json, e.g.
+                     '{"mode":"fixed-daily","fixedTime":"9:00 AM"}'.
+  status             Print state.json.
+  config             Print config.json.
+EOF
+  exit "${1:-0}"
+}
+
+osd() {
+  omarchy-notification-send -a "Theme Roulette" "$1" "${2:-}" >/dev/null 2>&1 || true
+}
+
+# ---- state / config I/O ----------------------------------------------------
+
+state_get() {
+  local filter="$1" default="${2:-}" v
+  v=$(jq -r "$filter // empty" "$STATE_FILE" 2>/dev/null)
+  echo "${v:-$default}"
+}
+
+state_merge() {
+  local patch_json="$1" tmp
+  tmp=$(mktemp "$STATE_DIR/.state.XXXXXX")
+  jq --argjson patch "$patch_json" '. * $patch' "$STATE_FILE" >"$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+config_get() {
+  local filter="$1" default="${2:-}" v
+  v=$(jq -r "$filter // empty" "$CONFIG_FILE" 2>/dev/null)
+  echo "${v:-$default}"
+}
+
+title_case() { sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g' <<<"$1"; }
+
+# ---- theme / wallpaper discovery -------------------------------------------
+#
+# Mirrors the real theme/background discovery Omarchy's own scripts use
+# (omarchy-theme-list, omarchy-theme-set's choose_theme_background), rather
+# than inventing a separate lookup: kebab-case directory names under
+# $OMARCHY_PATH/themes and ~/.config/omarchy/themes (user themes shadow
+# built-ins of the same name), and each theme's backgrounds/ folder plus any
+# extra user backgrounds under ~/.config/omarchy/backgrounds/<theme>/.
+
+list_theme_dirs() {
+  {
+    find "$OMARCHY_PATH/themes" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
+    find "$HOME/.config/omarchy/themes" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -printf '%f\n' 2>/dev/null
+  } | sort -u
+}
+
+list_backgrounds_for() {
+  local kebab="$1" dir extra
+  dir=$(omarchy theme dir "$kebab" 2>/dev/null) || return 1
+  extra="$HOME/.config/omarchy/backgrounds/$kebab"
+  find -L "$dir/backgrounds" "$extra" -maxdepth 1 -type f \
+    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.webp' \) \
+    2>/dev/null | sort -u
+}
+
+# Picks a random element of $2.. avoiding anything in the last N entries the
+# history query returns, falling back to the full list if that would leave
+# nothing to choose from (e.g. only one theme installed, or a window bigger
+# than the number of themes). $1 is the history values (newline-separated),
+# the rest are candidates.
+pick_avoiding() {
+  local history="$1"; shift
+  local candidates=("$@") pool=() c skip h
+  for c in "${candidates[@]}"; do
+    skip=0
+    while IFS= read -r h; do
+      [[ -n "$h" && "$c" == "$h" ]] && { skip=1; break; }
+    done <<<"$history"
+    (( skip )) || pool+=("$c")
+  done
+  (( ${#pool[@]} == 0 )) && pool=("${candidates[@]}")
+  printf '%s\n' "${pool[@]}" | shuf -n1
+}
+
+avoid_window() {
+  local window; window=$(config_get '.avoidRepeatWindow' '0')
+  [[ "$window" =~ ^[0-9]+$ ]] || window=0
+  # Always avoid at least the immediately-previous pick, per spec, even if
+  # avoidRepeatWindow is configured to 0.
+  (( window < 1 )) && window=1
+  echo "$window"
+}
+
+pick_theme() {
+  local themes=() history window
+  mapfile -t themes < <(list_theme_dirs)
+  (( ${#themes[@]} > 0 )) || { echo "No installed themes found" >&2; exit 1; }
+  window=$(avoid_window)
+  history=$(jq -r --argjson n "$window" '.history[0:$n][]?.theme // empty' "$STATE_FILE" 2>/dev/null)
+  pick_avoiding "$history" "${themes[@]}"
+}
+
+pick_wallpaper() {
+  local theme_kebab="$1" walls=() history window
+  mapfile -t walls < <(list_backgrounds_for "$theme_kebab")
+  (( ${#walls[@]} > 0 )) || return 1
+  window=$(avoid_window)
+  history=$(jq -r --argjson n "$window" '.history[0:$n][]?.wallpaper // empty' "$STATE_FILE" 2>/dev/null)
+  pick_avoiding "$history" "${walls[@]}"
+}
+
+# ---- applying a pick --------------------------------------------------------
+
+apply_pick() {
+  local theme_kebab="$1" wallpaper="$2"
+  omarchy theme set "$theme_kebab" >/dev/null
+  omarchy theme bg set "$wallpaper" >/dev/null
+}
+
+# ---- scheduling -------------------------------------------------------------
+
+now_epoch() { date +%s; }
+
+compute_next_random_interval() {
+  local min max min_s max_s span rand_s
+  min=$(config_get '.intervalMinHours' '4')
+  max=$(config_get '.intervalMaxHours' '12')
+  min_s=$(awk -v h="$min" 'BEGIN{v=h*3600; printf "%d", (v<0?0:v)}')
+  max_s=$(awk -v h="$max" 'BEGIN{v=h*3600; printf "%d", (v<0?0:v)}')
+  (( max_s < min_s )) && max_s=$min_s
+  span=$(( max_s - min_s ))
+  if (( span > 0 )); then
+    # $RANDOM is only 0-32767; combine two draws for a wider, still-uniform-
+    # enough spread across intervals that can be many hours in seconds.
+    rand_s=$(( (RANDOM * 32768 + RANDOM) % (span + 1) ))
+  else
+    rand_s=0
+  fi
+  echo $(( $(now_epoch) + min_s + rand_s ))
+}
+
+compute_next_fixed_daily() {
+  local hhmm today_epoch
+  hhmm=$(config_get '.fixedTime' '9:00 AM')
+  today_epoch=$(date -d "today $hhmm" +%s 2>/dev/null) || today_epoch=0
+  if (( today_epoch > $(now_epoch) )); then
+    echo "$today_epoch"
+  else
+    date -d "tomorrow $hhmm" +%s
+  fi
+}
+
+compute_next_specific_days() {
+  local hhmm days=() now i day_abbr candidate d
+  hhmm=$(config_get '.fixedTime' '9:00 AM')
+  mapfile -t days < <(jq -r '.days[]? // empty' "$CONFIG_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  (( ${#days[@]} > 0 )) || days=(mon tue wed thu fri sat sun)
+  now=$(now_epoch)
+  for (( i = 0; i < 8; i++ )); do
+    day_abbr=$(LC_TIME=C date -d "today +$i days" +%a | tr '[:upper:]' '[:lower:]')
+    candidate=$(date -d "today +$i days $hhmm" +%s 2>/dev/null) || continue
+    for d in "${days[@]}"; do
+      if [[ "$day_abbr" == "${d:0:3}" && "$candidate" -gt "$now" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    done
+  done
+  # Nothing matched in a full week (e.g. an empty/invalid `days` list) --
+  # fall back to a plain daily schedule rather than never rolling again.
+  compute_next_fixed_daily
+}
+
+compute_next_roll() {
+  local mode; mode=$(config_get '.mode' 'random-interval')
+  case "$mode" in
+    fixed-daily) compute_next_fixed_daily ;;
+    specific-days) compute_next_specific_days ;;
+    *) compute_next_random_interval ;;
+  esac
+}
+
+recompute_next() {
+  # Don't reschedule out from under a roll that's awaiting "Ready to roll?"
+  # confirmation -- confirm-pending/skip-pending own nextRollAt while pending
+  # is true, same as they own clearing it.
+  [[ "$(state_get '.pending' 'false')" == "true" ]] && return 0
+  local next
+  next=$(compute_next_roll)
+  state_merge "$(jq -nc --arg t "$(date -d "@$next" --iso-8601=seconds)" '{nextRollAt:$t}')"
+}
+
+# ---- commands ----------------------------------------------------------------
+
+# Shared by cmd_reroll (fresh pick) and cmd_confirm_pending (a pick already
+# chosen by cmd_check_due) -- both end the same way: apply, record history,
+# reschedule, clear any pending flag, notify.
+apply_and_record() {
+  local theme="$1" wallpaper="$2" title now_iso next next_iso cap tmp
+
+  apply_pick "$theme" "$wallpaper"
+
+  title=$(title_case "$theme")
+  now_iso=$(date --iso-8601=seconds)
+  next=$(compute_next_roll)
+  next_iso=$(date -d "@$next" --iso-8601=seconds)
+
+  cap=$(avoid_window)
+  # Keep a slightly longer tail than strictly required by avoidRepeatWindow
+  # so the history is still useful if the window is later widened, and so
+  # the right-click menu's rollback list has more than the bare minimum to
+  # offer.
+  (( cap < 10 )) && cap=10
+
+  tmp=$(mktemp "$STATE_DIR/.state.XXXXXX")
+  jq --arg theme "$title" --arg themeKebab "$theme" --arg wallpaper "$wallpaper" \
+     --arg now "$now_iso" --arg next "$next_iso" --argjson cap "$cap" \
+    '.currentTheme = $theme
+     | .currentThemeKebab = $themeKebab
+     | .currentWallpaper = $wallpaper
+     | .lastRollAt = $now
+     | .nextRollAt = $next
+     | .pending = false | .pendingTheme = "" | .pendingThemeKebab = "" | .pendingWallpaper = "" | .pendingSince = ""
+     | .history = ([{theme: $themeKebab, wallpaper: $wallpaper, at: $now}] + .history)[0:$cap]' \
+    "$STATE_FILE" >"$tmp"
+  mv "$tmp" "$STATE_FILE"
+
+  osd "$title" "$(basename -- "$wallpaper")"
+}
+
+cmd_reroll() {
+  exec 9>"$LOCK_FILE"
+  flock 9
+
+  local theme wallpaper
+  theme=$(pick_theme)
+  if ! wallpaper=$(pick_wallpaper "$theme"); then
+    echo "No wallpapers found for theme '$theme'" >&2
+    exit 1
+  fi
+  apply_and_record "$theme" "$wallpaper"
+}
+
+# Picks a theme+wallpaper the moment a scheduled roll comes due, but does
+# NOT apply it -- it's stashed as "pending" so the UI can show a "Ready to
+# roll?" prompt and give the user a beat to say "no, I'm feeling this"
+# before the desktop actually changes. Idempotent: does nothing once
+# already pending, so polling every 30s can't pick a second candidate out
+# from under a prompt still waiting on confirm-pending/skip-pending.
+cmd_check_due() {
+  [[ "$(state_get '.pending' 'false')" == "true" ]] && return 0
+
+  local next_iso next_epoch
+  next_iso=$(state_get '.nextRollAt' '')
+  if [[ -z "$next_iso" ]]; then
+    recompute_next
+    return 0
+  fi
+  next_epoch=$(date -d "$next_iso" +%s 2>/dev/null) || { recompute_next; return 0; }
+  (( $(now_epoch) >= next_epoch )) || return 0
+
+  exec 9>"$LOCK_FILE"
+  flock 9
+  # Re-check under the lock: another invocation may have raced us between
+  # the unlocked check above and here.
+  [[ "$(state_get '.pending' 'false')" == "true" ]] && return 0
+
+  local theme wallpaper title now_iso
+  theme=$(pick_theme)
+  if ! wallpaper=$(pick_wallpaper "$theme"); then
+    echo "No wallpapers found for theme '$theme'" >&2
+    exit 1
+  fi
+  title=$(title_case "$theme")
+  now_iso=$(date --iso-8601=seconds)
+  state_merge "$(jq -nc --arg t "$title" --arg tk "$theme" --arg w "$wallpaper" --arg since "$now_iso" \
+    '{pending:true, pendingTheme:$t, pendingThemeKebab:$tk, pendingWallpaper:$w, pendingSince:$since}')"
+}
+
+cmd_confirm_pending() {
+  exec 9>"$LOCK_FILE"
+  flock 9
+
+  [[ "$(state_get '.pending' 'false')" == "true" ]] || return 0
+
+  local theme wallpaper
+  theme=$(state_get '.pendingThemeKebab' '')
+  wallpaper=$(state_get '.pendingWallpaper' '')
+  if [[ -z "$theme" || -z "$wallpaper" ]]; then
+    echo "Pending roll is missing its theme/wallpaper" >&2
+    exit 1
+  fi
+  apply_and_record "$theme" "$wallpaper"
+}
+
+cmd_skip_pending() {
+  exec 9>"$LOCK_FILE"
+  flock 9
+
+  [[ "$(state_get '.pending' 'false')" == "true" ]] || return 0
+  state_merge '{"pending":false,"pendingTheme":"","pendingThemeKebab":"","pendingWallpaper":"","pendingSince":""}'
+  recompute_next
+}
+
+cmd_history() {
+  jq -c '[.history | to_entries[] | {index: .key, theme: .value.theme, wallpaper: .value.wallpaper, at: .value.at}]' \
+    "$STATE_FILE" 2>/dev/null || echo '[]'
+}
+
+# Re-applies a past history entry as an explicit override -- deliberately
+# does NOT touch history[] or nextRollAt: rolling back to a look you already
+# passed isn't a new roll, so it shouldn't disturb the schedule or push a
+# duplicate of an already-recorded entry into the avoid-repeat window.
+cmd_restore() {
+  local idx="${1:-}"
+  [[ "$idx" =~ ^[0-9]+$ ]] || { echo "Usage: theme-roulette restore <history-index>" >&2; exit 1; }
+
+  exec 9>"$LOCK_FILE"
+  flock 9
+
+  local theme wallpaper title now_iso tmp
+  theme=$(jq -r --argjson i "$idx" '.history[$i].theme // empty' "$STATE_FILE" 2>/dev/null)
+  wallpaper=$(jq -r --argjson i "$idx" '.history[$i].wallpaper // empty' "$STATE_FILE" 2>/dev/null)
+  if [[ -z "$theme" || -z "$wallpaper" ]]; then
+    echo "No history entry at index $idx" >&2
+    exit 1
+  fi
+
+  apply_pick "$theme" "$wallpaper"
+
+  title=$(title_case "$theme")
+  now_iso=$(date --iso-8601=seconds)
+  tmp=$(mktemp "$STATE_DIR/.state.XXXXXX")
+  jq --arg theme "$title" --arg themeKebab "$theme" --arg wallpaper "$wallpaper" --arg now "$now_iso" \
+    '.currentTheme = $theme | .currentThemeKebab = $themeKebab | .currentWallpaper = $wallpaper | .lastRollAt = $now
+     | .pending = false | .pendingTheme = "" | .pendingThemeKebab = "" | .pendingWallpaper = "" | .pendingSince = ""' \
+    "$STATE_FILE" >"$tmp"
+  mv "$tmp" "$STATE_FILE"
+
+  osd "$title" "$(basename -- "$wallpaper")"
+}
+
+cmd_config_set() {
+  local patch="${1:-}"
+  [[ -n "$patch" ]] || { echo "Usage: theme-roulette config-set '<json-patch>'" >&2; exit 1; }
+  jq -e . >/dev/null 2>&1 <<<"$patch" || { echo "config-set: invalid JSON" >&2; exit 1; }
+
+  local tmp; tmp=$(mktemp "$CONFIG_DIR/.config.XXXXXX")
+  jq --argjson patch "$patch" '. * $patch' "$CONFIG_FILE" >"$tmp"
+  mv "$tmp" "$CONFIG_FILE"
+  # config.json's own FileView.onLoaded (Service.qml) reschedules on change,
+  # so nothing further to do here -- unless a roll is currently pending, in
+  # which case recompute_next() no-ops on purpose (see above) and the new
+  # schedule takes effect once that roll resolves.
+}
+
+# ---- first-run init ----------------------------------------------------------
+#
+# Seed state from whatever theme/wallpaper Omarchy already has live, rather
+# than leaving the panel blank until the first roll -- this plugin adopts
+# the desktop's current look on install instead of silently changing it.
+if [[ ! -f "$STATE_FILE" ]]; then
+  echo "$DEFAULT_STATE" >"$STATE_FILE"
+  cur_theme_kebab=$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo "")
+  cur_theme_title=""
+  [[ -n "$cur_theme_kebab" ]] && cur_theme_title=$(title_case "$cur_theme_kebab")
+  cur_wallpaper=$(readlink -f "$HOME/.local/state/omarchy/current/background" 2>/dev/null || echo "")
+  state_merge "$(jq -nc --arg t "$cur_theme_title" --arg tk "$cur_theme_kebab" --arg w "$cur_wallpaper" \
+    '{currentTheme: $t, currentThemeKebab: $tk, currentWallpaper: $w}')"
+  recompute_next
+fi
+
+main() {
+  case "${1:-}" in
+    reroll) cmd_reroll ;;
+    check-due) cmd_check_due ;;
+    confirm-pending) cmd_confirm_pending ;;
+    skip-pending) cmd_skip_pending ;;
+    recompute-next) recompute_next ;;
+    history) cmd_history ;;
+    restore) cmd_restore "${2:-}" ;;
+    config-set) cmd_config_set "${2:-}" ;;
+    status) cat "$STATE_FILE" ;;
+    config) cat "$CONFIG_FILE" ;;
+    -h | --help | "") usage 0 ;;
+    *)
+      echo "Unknown command: $1" >&2
+      usage 1
+      ;;
+  esac
+}
+
+main "$@"

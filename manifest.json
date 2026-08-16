@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "trigz.theme-roulette",
+  "name": "Theme Roulette",
+  "version": "0.1.0",
+  "author": "trigz",
+  "license": "MIT",
+  "description": "Cycles your Omarchy theme + wallpaper together on a schedule -- random interval, fixed daily time, or specific days -- with a bar button to reroll on demand and a dice popup to reroll again if you don't like what you got.",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Theme Roulette",
+    "description": "Feel like something different? Reroll your theme + wallpaper.",
+    "category": "Appearance",
+    "allowMultiple": false
+  }
+}
