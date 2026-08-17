@@ -43,6 +43,11 @@ Item {
   property int draftMinute: 0
   property string draftAmPm: "AM"
   property var draftDays: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+  // Brief post-click confirmation on "Apply schedule" -- setConfig() is a
+  // fire-and-forget write to config.json with no visible state change of
+  // its own, so without this the button gives no feedback that anything
+  // happened at all.
+  property bool justApplied: false
 
   // "9:00 AM" (what this menu writes) and "21:00" (a hand-edited 24h
   // config.json, since the CLI's `date -d "today $fixedTime"` accepts
@@ -112,6 +117,8 @@ Item {
       patch.days = draftDays
     }
     svc.setConfig(patch)
+    root.justApplied = true
+    applyFeedbackTimer.restart()
   }
 
   // theme-roulette's history entries store kebab names (display strings are
@@ -335,15 +342,19 @@ Item {
         Layout.fillWidth: true
         Layout.preferredHeight: applyLabel.implicitHeight + Style.space(12)
         radius: Style.cornerRadius
-        color: applyHover.containsMouse
-          ? Style.hoverFillFor(root.bar ? root.bar.foreground : Color.foreground, Color.accent)
-          : Qt.rgba(0, 0, 0, 0.15)
+        color: root.justApplied
+          ? Color.accent
+          : (applyHover.containsMouse
+            ? Style.hoverFillFor(root.bar ? root.bar.foreground : Color.foreground, Color.accent)
+            : Qt.rgba(0, 0, 0, 0.15))
+
+        Behavior on color { ColorAnimation { duration: 120 } }
 
         Text {
           id: applyLabel
           anchors.centerIn: parent
-          text: "Apply schedule"
-          color: root.bar ? root.bar.foreground : Color.foreground
+          text: root.justApplied ? "Applied ✓" : "Apply schedule"
+          color: root.justApplied ? Color.background : (root.bar ? root.bar.foreground : Color.foreground)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.bodySmall
         }
@@ -355,6 +366,12 @@ Item {
           cursorShape: Qt.PointingHandCursor
           onClicked: root.applySchedule()
         }
+      }
+
+      Timer {
+        id: applyFeedbackTimer
+        interval: 1200
+        onTriggered: root.justApplied = false
       }
 
       PanelSeparator { Layout.fillWidth: true }
