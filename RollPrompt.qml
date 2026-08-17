@@ -120,7 +120,7 @@ Item {
             width: parent.width - Style.space(8)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            text: "Let it ride"
+            text: "Roll the Dice"
             color: rideHover.containsMouse ? Color.background : (root.bar ? root.bar.foreground : Color.foreground)
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
@@ -150,7 +150,7 @@ Item {
             width: parent.width - Style.space(8)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            text: "I'm feeling this"
+            text: "I'm still feeling this theme"
             color: root.bar ? root.bar.foreground : Color.foreground
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
