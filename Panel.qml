@@ -147,6 +147,7 @@ Panel {
             spacing: Style.space(8)
 
             DiceIcon {
+              id: rerollDice
               iconSize: Style.font.body
               color: root.bar ? root.bar.foreground : Color.foreground
 
@@ -155,6 +156,10 @@ Panel {
                 from: 0; to: 360
                 duration: 700
                 loops: Animation.Infinite
+                // Infinite loops stop wherever they happen to be in the
+                // cycle, not at 0 -- without this the icon freezes mid-spin
+                // instead of returning to its resting orientation.
+                onRunningChanged: if (!running) rerollDice.rotation = 0
               }
             }
 

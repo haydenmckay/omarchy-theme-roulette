@@ -174,6 +174,10 @@ BarWidget {
             from: 0; to: 360
             duration: 700
             loops: Animation.Infinite
+            // Infinite loops stop wherever they happen to be in the cycle,
+            // not at 0 -- without this the icon freezes mid-spin instead of
+            // returning to its resting orientation once rolling ends.
+            onRunningChanged: if (!running) diceIcon.rotation = 0
           }
         }
       }

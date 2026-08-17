@@ -19,16 +19,15 @@ import qs.Ui
 // elsewhere) would yank a field out from under whatever the user is
 // currently typing.
 // Compact stepper: +/- buttons flanking a directly-editable, validated
-// number, plus scroll-to-step. Used for interval hours and the hour/minute
-// segments of the fixed-time picker -- see the PopupCard.grabFocus note
-// below for why a plain TextField/QQC SpinBox silently ignored all
-// keyboard input here (backspace, typed digits, double-click-to-select)
-// even though click-driven controls like Dropdown worked fine: this popup
-// is a Quickshell PopupWindow, which Qt creates with the Qt::ToolTip window
-// flag unless `grabFocus: true` is set -- ToolTip windows never receive
-// keyboard focus at the platform level, full stop, regardless of any QML
-// forceActiveFocus() call. Buttons/scroll never depended on that, which is
-// exactly why they weren't reported as broken.
+// number, plus scroll-to-step and press-and-hold auto-repeat. Used for
+// interval hours and the hour/minute segments of the fixed-time picker.
+// Typing/backspace into the center number may not reliably work -- see the
+// PopupCard.grabFocus note below for why (Qt::ToolTip windows, which is
+// what this popup is, never receive keyboard focus at the platform level;
+// the alternative, Qt::Popup, breaks the popup opening at all when
+// anchored to the bar). The buttons/scroll/press-hold are fully
+// MouseArea/WheelHandler-driven and don't depend on window keyboard focus,
+// so treat those as the primary, reliable way to change a value here.
 component Stepper: Item {
   id: stepper
 
@@ -284,13 +283,21 @@ Item {
     bar: root.bar
     owner: root.owner
     open: root.open
-    // Without this, Quickshell creates the popup's underlying window with
-    // the Qt::ToolTip flag, which never receives keyboard focus at the
-    // platform level -- see the Stepper component's header comment above
-    // for the full trace. PopupCard.qml's own HyprlandFocusGrab still
-    // handles outside-click dismissal unchanged; this is what makes
-    // typing/backspace actually reach the fields inside.
-    grabFocus: true
+    // grabFocus: true was tried here to fix keyboard input (see the Stepper
+    // component's header comment) but reverted -- it flips Quickshell's
+    // PopupWindow from Qt::ToolTip to Qt::Popup, which requests a native
+    // xdg_popup grab. That grab appears to be incompatible with this
+    // popup's transient parent being a layer-shell surface (the bar
+    // itself): with grabFocus set, right-click stopped opening the menu at
+    // all (almost certainly the compositor rejecting/immediately clearing
+    // an xdg_popup grab whose parent isn't a plain xdg_surface toplevel).
+    // A menu that won't open is worse than one that opens but can't always
+    // be typed into, so this is reverted for now -- the Stepper's
+    // buttons/scroll/press-hold are fully MouseArea/WheelHandler-driven and
+    // don't depend on window keyboard focus at all, so they stay reliable
+    // either way. Real fix would need a way to grant this window keyboard
+    // focus without an xdg_popup grab tied to a layer-shell parent -- not
+    // solved here.
     contentWidth: card.fittedContentWidth(Style.space(300))
     contentHeight: card.fittedContentHeight(menuColumn.implicitHeight)
 
