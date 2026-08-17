@@ -107,10 +107,16 @@ Item {
         Layout.fillWidth: true
         spacing: Style.space(8)
 
+        // Both buttons share one height (max of the two labels', not each
+        // sized off its own) -- otherwise a copy-length mismatch between
+        // them makes one visibly taller/shorter than the other, which is
+        // exactly what happened here before this was added.
+        readonly property real buttonHeight: Math.max(rideLabel.implicitHeight, passLabel.implicitHeight) + Style.space(14)
+
         Rectangle {
           id: rideButton
           Layout.fillWidth: true
-          Layout.preferredHeight: rideLabel.implicitHeight + Style.space(14)
+          Layout.preferredHeight: parent.buttonHeight
           radius: Style.cornerRadius
           color: rideHover.containsMouse ? Color.accent : Qt.rgba(0, 0, 0, 0.15)
 
@@ -138,7 +144,7 @@ Item {
 
         Rectangle {
           Layout.fillWidth: true
-          Layout.preferredHeight: passLabel.implicitHeight + Style.space(14)
+          Layout.preferredHeight: parent.buttonHeight
           radius: Style.cornerRadius
           color: passHover.containsMouse
             ? Style.hoverFillFor(root.bar ? root.bar.foreground : Color.foreground, Color.accent)
@@ -150,7 +156,7 @@ Item {
             width: parent.width - Style.space(8)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            text: "I'm still feeling this theme"
+            text: "Still Feeling This"
             color: root.bar ? root.bar.foreground : Color.foreground
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
