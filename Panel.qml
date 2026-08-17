@@ -17,7 +17,7 @@ import qs.Ui
 // through BarWidget.qml's Loader, never summoned standalone.
 Panel {
   id: root
-  moduleName: "trigz.theme-roulette"
+  moduleName: "io.github.haydenmckay.theme-roulette"
   manageIpc: false
 
   property var anchorItem: null

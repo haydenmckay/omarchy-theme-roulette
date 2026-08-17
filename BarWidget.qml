@@ -32,9 +32,9 @@ import qs.Ui
 // panel kind for exactly this loaded-via-Loader shape).
 BarWidget {
   id: root
-  moduleName: "trigz.theme-roulette"
+  moduleName: "io.github.haydenmckay.theme-roulette"
 
-  readonly property var svc: bar?.shell?.serviceFor("trigz.theme-roulette")
+  readonly property var svc: bar?.shell?.serviceFor("io.github.haydenmckay.theme-roulette")
 
   function injectPanel() {
     var target = panelLoader.item

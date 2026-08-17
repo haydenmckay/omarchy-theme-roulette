@@ -13,7 +13,7 @@ Guidance for Claude Code when working on this project.
 ./install.sh                        # sync into the live plugin dir + validate + symlink CLI
 theme-roulette status               # inspect current state
 theme-roulette reroll               # force a roll from a terminal
-omarchy plugin validate ~/.config/omarchy/plugins/trigz.theme-roulette
+omarchy plugin validate ~/.config/omarchy/plugins/io.github.haydenmckay.theme-roulette
 qmllint -I "$OMARCHY_PATH/shell" BarWidget.qml Panel.qml Service.qml
 ```
 

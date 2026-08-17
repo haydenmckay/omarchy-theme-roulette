@@ -9,7 +9,7 @@
 # editing anything.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-DEST="$HOME/.config/omarchy/plugins/trigz.theme-roulette"
+DEST="$HOME/.config/omarchy/plugins/io.github.haydenmckay.theme-roulette"
 
 mkdir -p "$DEST/bin"
 cp "$SCRIPT_DIR"/*.json "$SCRIPT_DIR"/*.qml "$DEST"/
@@ -21,4 +21,4 @@ chmod +x "$DEST/bin/theme-roulette"
 ln -sf "$SCRIPT_DIR/bin/theme-roulette" "$HOME/.local/bin/theme-roulette"
 
 omarchy plugin validate "$DEST"
-echo "Installed. Run 'omarchy plugin enable trigz.theme-roulette' if not already enabled."
+echo "Installed. Run 'omarchy plugin enable io.github.haydenmckay.theme-roulette' if not already enabled."
