@@ -26,7 +26,18 @@ Item {
   // Plugins find their own install directory via manifest.__sourceDir
   // (stamped in by services/PluginRegistry.qml) rather than a hardcoded
   // ~/Work path, so the CLI resolves correctly for any install location.
-  readonly property string sourceDir: manifest && manifest.__sourceDir ? manifest.__sourceDir : ""
+  // Omarchy 4.0.3 routes third-party manifests through shell.qml's
+  // publicPluginManifest(), which deletes __sourceDir before the manifest
+  // reaches the plugin -- leaving this empty and silently disabling every
+  // Process call downstream (a click that does nothing, no error logged).
+  // Fall back to this file's own directory, which nothing can strip. The
+  // manifest branch stays first so 4.0.0 and first-party installs keep
+  // their existing behaviour.
+  readonly property string sourceDir: {
+    if (manifest && manifest.__sourceDir) return String(manifest.__sourceDir)
+    var u = String(Qt.resolvedUrl("."))
+    return decodeURIComponent((u.indexOf("file://") === 0 ? u.substring(7) : u).replace(/\/$/, ""))
+  }
 
   // A companion CLI living inside an *installed* plugin's own directory
   // cannot be launched via Quickshell's Process when loaded through
@@ -165,7 +176,13 @@ Item {
   }
 
   function run(args, proc) {
-    if (!cliStaged || proc.running) return
+    // Loud on purpose: a silent return here is exactly what made the
+    // stripped-__sourceDir breakage look like an inert bar icon.
+    if (!cliStaged) {
+      console.warn("theme-roulette: CLI not staged (sourceDir=\"" + sourceDir + "\") -- ignoring " + args[0])
+      return
+    }
+    if (proc.running) return
     proc.command = [root.stagedCliPath].concat(args)
     proc.running = true
   }

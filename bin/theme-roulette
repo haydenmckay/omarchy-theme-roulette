@@ -215,8 +215,18 @@ pick_wallpaper() {
 
 apply_pick() {
   local theme_kebab="$1" wallpaper="$2"
-  omarchy theme set "$theme_kebab" >/dev/null
-  omarchy theme bg set "$wallpaper" >/dev/null
+  # Bounded on purpose. `omarchy theme set` fans out to post-theme hooks via
+  # run_parallel and waits on all of them, so a single hook that never
+  # returns wedges the whole roll: the state lock stays held, every later
+  # reroll blocks on flock, and the bar's dice spins forever with no error.
+  # Seen for real on omarchy 4.0.3, whose omarchy-theme-set-browser
+  # misdetects which Brave build is running and then blocks on a windowless
+  # browser it just launched. A stuck hook is the desktop's problem to fix,
+  # but it must not cost us the session.
+  timeout 120 omarchy theme set "$theme_kebab" >/dev/null \
+    || echo "theme-roulette: 'omarchy theme set $theme_kebab' failed or timed out" >&2
+  timeout 60 omarchy theme bg set "$wallpaper" >/dev/null \
+    || echo "theme-roulette: 'omarchy theme bg set $wallpaper' failed or timed out" >&2
 }
 
 # ---- scheduling -------------------------------------------------------------
