@@ -10,7 +10,7 @@ Guidance for Claude Code when working on this project.
 ## Development
 
 ```bash
-./install.sh                        # sync into the live plugin dir + validate + symlink CLI
+./dev-sync.sh                       # sync into the live plugin dir + validate + symlink CLI
 theme-roulette status               # inspect current state
 theme-roulette reroll               # force a roll from a terminal
 omarchy plugin validate ~/.config/omarchy/plugins/io.github.haydenmckay.theme-roulette

@@ -50,9 +50,13 @@ mkdir -p "$CONFIG_DIR" "$STATE_DIR"
 # avoidRepeatWindow: don't repeat a theme/wallpaper seen in the last N rolls.
 # A repeat of the *immediately previous* pick is always avoided even if this
 # is 0 -- see pick_theme/pick_wallpaper.
+# autoRoll: master switch for scheduled rolls. false = never roll on its own
+# (no nextRollAt, no "Ready to roll?" prompt); manual reroll/restore still
+# work. Missing counts as true so existing configs keep rolling.
 # confirmTimeoutSeconds: how long a scheduled ("Ready to roll?") pick waits
 # for a response before auto-resolving to "Let it ride" -- see cmd_check_due.
 DEFAULT_CONFIG='{
+  "autoRoll": true,
   "mode": "random-interval",
   "intervalMinHours": 4,
   "intervalMaxHours": 12,
@@ -136,6 +140,16 @@ config_get() {
   local filter="$1" default="${2:-}" v
   v=$(jq -r "$filter // empty" "$CONFIG_FILE" 2>/dev/null)
   echo "${v:-$default}"
+}
+
+# Not config_get: jq's `//` treats false as missing, so `.autoRoll // empty`
+# would read an explicit false as the default.
+auto_roll_on() {
+  [[ "$(jq -r '.autoRoll != false' "$CONFIG_FILE" 2>/dev/null)" != "false" ]]
+}
+
+clear_pending() {
+  state_merge '{"pending":false,"pendingTheme":"","pendingThemeKebab":"","pendingWallpaper":"","pendingSince":""}'
 }
 
 title_case() { sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g' <<<"$1"; }
@@ -297,6 +311,10 @@ recompute_next() {
   # confirmation -- confirm-pending/skip-pending own nextRollAt while pending
   # is true, same as they own clearing it.
   [[ "$(state_get '.pending' 'false')" == "true" ]] && return 0
+  if ! auto_roll_on; then
+    state_merge '{"nextRollAt":""}'
+    return 0
+  fi
   local next
   next=$(compute_next_roll)
   state_merge "$(jq -nc --arg t "$(date -d "@$next" --iso-8601=seconds)" '{nextRollAt:$t}')"
@@ -314,8 +332,11 @@ apply_and_record() {
 
   title=$(title_case "$theme")
   now_iso=$(date --iso-8601=seconds)
-  next=$(compute_next_roll)
-  next_iso=$(date -d "@$next" --iso-8601=seconds)
+  next_iso=""
+  if auto_roll_on; then
+    next=$(compute_next_roll)
+    next_iso=$(date -d "@$next" --iso-8601=seconds)
+  fi
 
   cap=$(avoid_window)
   # Keep a slightly longer tail than strictly required by avoidRepeatWindow
@@ -360,6 +381,7 @@ cmd_reroll() {
 # already pending, so polling every 30s can't pick a second candidate out
 # from under a prompt still waiting on confirm-pending/skip-pending.
 cmd_check_due() {
+  auto_roll_on || return 0
   [[ "$(state_get '.pending' 'false')" == "true" ]] && return 0
 
   local next_iso next_epoch
@@ -375,6 +397,7 @@ cmd_check_due() {
   flock 9
   # Re-check under the lock: another invocation may have raced us between
   # the unlocked check above and here.
+  auto_roll_on || return 0
   [[ "$(state_get '.pending' 'false')" == "true" ]] && return 0
 
   local theme wallpaper title now_iso
@@ -410,7 +433,7 @@ cmd_skip_pending() {
   flock 9
 
   [[ "$(state_get '.pending' 'false')" == "true" ]] || return 0
-  state_merge '{"pending":false,"pendingTheme":"","pendingThemeKebab":"","pendingWallpaper":"","pendingSince":""}'
+  clear_pending
   recompute_next
 }
 
@@ -460,6 +483,14 @@ cmd_config_set() {
   local tmp; tmp=$(mktemp "$CONFIG_DIR/.config.XXXXXX")
   jq --argjson patch "$patch" '. * $patch' "$CONFIG_FILE" >"$tmp"
   mv "$tmp" "$CONFIG_FILE"
+  # Switching auto-roll off also drops a prompt that's already up -- left
+  # alone, its countdown would still auto-confirm and roll anyway.
+  if ! auto_roll_on; then
+    exec 9>"$LOCK_FILE"
+    flock 9
+    clear_pending
+    recompute_next
+  fi
   # config.json's own FileView.onLoaded (Service.qml) reschedules on change,
   # so nothing further to do here -- unless a roll is currently pending, in
   # which case recompute_next() no-ops on purpose (see above) and the new

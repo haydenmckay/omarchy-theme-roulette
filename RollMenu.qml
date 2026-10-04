@@ -3,8 +3,8 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// Right-click menu for the dice bar icon: schedule controls (mode + its
-// parameter) and a rollback list of recent rolls. Wraps PopupCard behind a
+// Right-click menu for the dice bar icon: schedule controls (auto-roll
+// on/off, mode + its parameter) and a rollback list of recent rolls. Wraps PopupCard behind a
 // plain Item with ordinary (non-required) properties -- same shape our own
 // Panel.qml uses around KeyboardPanel -- because BarWidget.qml wires
 // anchorItem/bar/owner/svc in via `Binding` elements *after* this loads
@@ -36,6 +36,10 @@ Item {
 
   function close() { card.close() }
 
+  // Optimistic copy of svc.autoRoll so the knob throws on click instead of
+  // after the config-set round trip. Unlike the draft fields below it
+  // applies immediately -- no "Apply schedule" needed to turn rolling off.
+  property bool autoRoll: true
   property string draftMode: "random-interval"
   property int draftIntervalMin: 4
   property int draftIntervalMax: 12
@@ -86,6 +90,7 @@ Item {
 
   function syncFromService() {
     if (!svc) return
+    autoRoll = svc.autoRoll
     draftMode = svc.mode
     draftIntervalMin = svc.intervalMinHours
     draftIntervalMax = svc.intervalMaxHours
@@ -184,7 +189,30 @@ Item {
 
       PanelSectionHeader { Layout.fillWidth: true; text: "Schedule" }
 
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(8)
+
+        Text {
+          Layout.fillWidth: true
+          text: "Auto-roll"
+          color: root.bar ? root.bar.foreground : Color.foreground
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        ToggleSwitch {
+          checked: root.autoRoll
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          onToggled: {
+            root.autoRoll = !root.autoRoll
+            if (root.svc) root.svc.setAutoRoll(root.autoRoll)
+          }
+        }
+      }
+
       Dropdown {
+        visible: root.autoRoll
         Layout.fillWidth: true
         showLabel: false
         value: root.draftMode
@@ -197,7 +225,7 @@ Item {
       }
 
       RowLayout {
-        visible: root.draftMode === "random-interval"
+        visible: root.autoRoll && root.draftMode === "random-interval"
         Layout.fillWidth: true
         spacing: Style.space(16)
 
@@ -237,7 +265,7 @@ Item {
       }
 
       ColumnLayout {
-        visible: root.draftMode === "fixed-daily" || root.draftMode === "specific-days"
+        visible: root.autoRoll && (root.draftMode === "fixed-daily" || root.draftMode === "specific-days")
         Layout.fillWidth: true
         spacing: Style.space(4)
 
@@ -304,7 +332,7 @@ Item {
       }
 
       RowLayout {
-        visible: root.draftMode === "specific-days"
+        visible: root.autoRoll && root.draftMode === "specific-days"
         Layout.fillWidth: true
         spacing: Style.space(4)
 
@@ -339,6 +367,7 @@ Item {
       }
 
       Rectangle {
+        visible: root.autoRoll
         Layout.fillWidth: true
         Layout.preferredHeight: applyLabel.implicitHeight + Style.space(12)
         radius: Style.cornerRadius

@@ -85,6 +85,9 @@ Item {
   readonly property string nextRollAt: state.nextRollAt || ""
   readonly property string lastRollAt: state.lastRollAt || ""
   readonly property var history: state.history || []
+  // Master switch for scheduled rolls; missing counts as on (see the CLI's
+  // auto_roll_on). Manual reroll/restore ignore it.
+  readonly property bool autoRoll: config.autoRoll !== false
   readonly property string mode: config.mode || "random-interval"
   readonly property int intervalMinHours: config.intervalMinHours !== undefined ? config.intervalMinHours : 4
   readonly property int intervalMaxHours: config.intervalMaxHours !== undefined ? config.intervalMaxHours : 12
@@ -128,7 +131,7 @@ Item {
       var deadline = Date.parse(root.pendingSince) + root.confirmTimeoutSeconds * 1000
       var left = Math.max(0, Math.round((deadline - Date.now()) / 1000))
       root.pendingSecondsLeft = left
-      if (left <= 0 && !root.autoConfirmFired) {
+      if (left <= 0 && !root.autoConfirmFired && root.autoRoll) {
         root.autoConfirmFired = true
         root.confirmPending()
       }
@@ -226,6 +229,8 @@ Item {
   // here on success.
   function setConfig(patch) { run(["config-set", JSON.stringify(patch)], configSetProc) }
   Process { id: configSetProc }
+
+  function setAutoRoll(on) { setConfig({ autoRoll: on }) }
 
   // Rollback: re-applies a past roll from `history` by index without
   // disturbing history or the schedule.

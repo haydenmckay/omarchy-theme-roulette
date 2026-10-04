@@ -31,6 +31,7 @@ Panel {
   readonly property string mode: svc ? svc.mode : "random-interval"
 
   function modeLabel() {
+    if (svc && !svc.autoRoll) return "Auto-roll off"
     switch (mode) {
       case "fixed-daily": return "Rolls daily"
       case "specific-days": return "Rolls on schedule"

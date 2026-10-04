@@ -105,6 +105,7 @@ settings UI yet). Created with these defaults on first run:
 
 ```json
 {
+  "autoRoll": true,
   "mode": "random-interval",
   "intervalMinHours": 4,
   "intervalMaxHours": 12,
@@ -117,6 +118,7 @@ settings UI yet). Created with these defaults on first run:
 
 | Field | Meaning |
 |---|---|
+| `autoRoll` | Master switch for scheduled rolls. `false` = never roll on its own (no schedule, no "Ready to roll?" prompt); the dice and rollback still work. Toggle it from the right-click menu's **Auto-roll** switch. |
 | `mode` | `random-interval` \| `fixed-daily` \| `specific-days` |
 | `intervalMinHours` / `intervalMaxHours` | Bounds for `random-interval`, in hours. |
 | `fixedTime` | Time of day for `fixed-daily` / `specific-days`. Anything GNU `date -d` parses as a time works -- `"9:00 AM"` and `"21:00"` both fine. |
@@ -197,4 +199,4 @@ that needs its own systemd unit.
 - `Panel.qml` -- shows the current roll; dice button to reroll again.
 - `RollMenu.qml` -- right-click menu: schedule controls + rollback list.
 - `RollPrompt.qml` -- "Ready to roll?" prompt for a pending scheduled roll.
-- `install.sh` -- dev-loop install into `~/.config/omarchy/plugins/`.
+- `dev-sync.sh` -- dev-loop sync into `~/.config/omarchy/plugins/`.
